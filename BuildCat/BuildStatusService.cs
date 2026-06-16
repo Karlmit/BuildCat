@@ -9,24 +9,36 @@ internal sealed class BuildStatusService
         _client = client;
     }
 
-    public async Task<BuildSnapshot> GetSnapshotAsync(AppSettings settings, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<BuildSnapshot>> GetSnapshotsAsync(
+        AppSettings settings, CancellationToken cancellationToken)
     {
-        var checkedAt = DateTimeOffset.Now;
-        var repository = settings.RepositorySlug;
-
-        if (string.IsNullOrWhiteSpace(settings.Owner) || string.IsNullOrWhiteSpace(settings.Repo))
+        if (settings.Repos.Count == 0)
         {
-            return Unknown(repository, checkedAt, "Missing GitHub owner or repo.");
+            return [Unknown("Not configured", DateTimeOffset.Now, "No repositories configured.",
+                !string.IsNullOrWhiteSpace(settings.GitHubToken))];
         }
 
-        var result = await _client.GetLatestRunAsync(settings, cancellationToken);
+        var tasks = settings.Repos
+            .Select(slug => FetchSnapshotAsync(slug, settings.GitHubToken, cancellationToken));
+        return await Task.WhenAll(tasks);
+    }
+
+    private async Task<BuildSnapshot> FetchSnapshotAsync(
+        string slug, string? token, CancellationToken cancellationToken)
+    {
+        var checkedAt = DateTimeOffset.Now;
+        var parts = slug.Split('/', 2);
+        var owner = parts[0];
+        var repo = parts[1];
+
+        var result = await _client.GetLatestRunAsync(owner, repo, token, cancellationToken);
         if (result.Run is null)
         {
             return Unknown(
-                repository,
+                slug,
                 checkedAt,
                 result.ErrorMessage,
-                !string.IsNullOrWhiteSpace(settings.GitHubToken),
+                !string.IsNullOrWhiteSpace(token),
                 result.RateLimitLimit,
                 result.RateLimitRemaining,
                 result.RateLimitReset);
@@ -38,14 +50,14 @@ internal sealed class BuildStatusService
             state,
             run.Id,
             ToStatusText(state, run.Status, run.Conclusion),
-            repository,
+            slug,
             run.Name,
             run.DisplayTitle,
             run.HtmlUrl,
             run.CreatedAt,
             run.UpdatedAt,
             checkedAt,
-            !string.IsNullOrWhiteSpace(settings.GitHubToken),
+            !string.IsNullOrWhiteSpace(token),
             result.RateLimitLimit,
             result.RateLimitRemaining,
             result.RateLimitReset,

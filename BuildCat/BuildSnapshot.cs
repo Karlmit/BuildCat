@@ -43,4 +43,14 @@ internal sealed record BuildSnapshot(
             return $"BuildCat - {shortRepository}: {StatusText}";
         }
     }
+
+    // Red > Yellow > Gray > Green priority for the tray icon.
+    public static BuildState AggregateState(IReadOnlyList<BuildSnapshot> snapshots)
+    {
+        if (snapshots.Count == 0) return BuildState.Unknown;
+        if (snapshots.Any(s => s.State == BuildState.Failed)) return BuildState.Failed;
+        if (snapshots.Any(s => s.State == BuildState.Running)) return BuildState.Running;
+        if (snapshots.Any(s => s.State == BuildState.Success)) return BuildState.Success;
+        return BuildState.Unknown;
+    }
 }

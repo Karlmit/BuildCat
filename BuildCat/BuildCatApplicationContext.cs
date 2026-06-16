@@ -11,13 +11,9 @@ internal sealed class BuildCatApplicationContext : ApplicationContext
     private readonly CancellationTokenSource _shutdown = new();
     private readonly SemaphoreSlim _checkLock = new(1, 1);
     private readonly SemaphoreSlim _pollWake = new(0, 1);
-    private readonly HashSet<long> _runningRunsObserved = [];
-    private readonly HashSet<long> _startedRunsNotified = [];
-    private readonly HashSet<long> _completedRunsNotified = [];
+    private readonly Dictionary<string, RepoNotificationTracker> _notificationTrackers = [];
     private AppSettings _settings;
-    private BuildSnapshot? _lastSnapshot;
-    private long? _lastKnownRunId;
-    private bool _hasObservedRun;
+    private IReadOnlyList<BuildSnapshot> _lastSnapshots = [];
     private bool _isExiting;
 
     public BuildCatApplicationContext()
@@ -44,14 +40,14 @@ internal sealed class BuildCatApplicationContext : ApplicationContext
 
     private async Task PollLoopAsync(CancellationToken cancellationToken)
     {
-        var snapshot = await CheckNowAsync();
+        var snapshots = await CheckNowAsync();
 
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
-                var nextDelay = GetNextPollDelay(_lastSnapshot ?? snapshot);
-                _tray.UpdateNextPoll(nextDelay, _lastSnapshot ?? snapshot);
+                var nextDelay = GetNextPollDelay(_lastSnapshots);
+                _tray.UpdateNextPoll(nextDelay, _lastSnapshots);
                 using var waitCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 var delayTask = Task.Delay(nextDelay, waitCancellation.Token);
                 var wakeTask = _pollWake.WaitAsync(waitCancellation.Token);
@@ -63,7 +59,7 @@ internal sealed class BuildCatApplicationContext : ApplicationContext
                     continue;
                 }
 
-                snapshot = await CheckNowAsync();
+                snapshots = await CheckNowAsync();
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -72,46 +68,47 @@ internal sealed class BuildCatApplicationContext : ApplicationContext
         }
     }
 
-    private async Task<BuildSnapshot?> CheckNowAsync()
+    private async Task<IReadOnlyList<BuildSnapshot>> CheckNowAsync()
     {
         if (_isExiting || !await _checkLock.WaitAsync(0))
         {
-            return _lastSnapshot;
+            return _lastSnapshots;
         }
 
         try
         {
-            var snapshot = await _statusService.GetSnapshotAsync(_settings.Clone(), _shutdown.Token);
-            _tray.UpdateSnapshot(snapshot);
-            MaybeNotify(snapshot);
-            _lastSnapshot = snapshot;
-            return snapshot;
+            var snapshots = await _statusService.GetSnapshotsAsync(_settings.Clone(), _shutdown.Token);
+            _tray.UpdateSnapshots(snapshots);
+            foreach (var snapshot in snapshots)
+            {
+                MaybeNotify(snapshot);
+            }
+            _lastSnapshots = snapshots;
+            return snapshots;
         }
         catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
         {
-            return _lastSnapshot;
+            return _lastSnapshots;
         }
         catch (Exception ex) when (!_shutdown.IsCancellationRequested)
         {
-            var snapshot = new BuildSnapshot(
-                BuildState.Unknown,
-                null,
-                "Unknown",
-                _settings.RepositorySlug,
-                null,
-                null,
-                null,
-                null,
-                null,
-                DateTimeOffset.Now,
-                !string.IsNullOrWhiteSpace(_settings.GitHubToken),
-                null,
-                null,
-                null,
-                ex.Message);
-            _tray.UpdateSnapshot(snapshot);
-            _lastSnapshot = snapshot;
-            return snapshot;
+            var fallback = _settings.Repos.Count > 0
+                ? _settings.Repos.Select(slug => new BuildSnapshot(
+                    BuildState.Unknown, null, "Unknown", slug,
+                    null, null, null, null, null,
+                    DateTimeOffset.Now,
+                    !string.IsNullOrWhiteSpace(_settings.GitHubToken),
+                    null, null, null, ex.Message)).ToList()
+                : [new BuildSnapshot(
+                    BuildState.Unknown, null, "Unknown", "Not configured",
+                    null, null, null, null, null,
+                    DateTimeOffset.Now,
+                    !string.IsNullOrWhiteSpace(_settings.GitHubToken),
+                    null, null, null, ex.Message)];
+
+            _tray.UpdateSnapshots(fallback);
+            _lastSnapshots = fallback;
+            return fallback;
         }
         finally
         {
@@ -119,15 +116,11 @@ internal sealed class BuildCatApplicationContext : ApplicationContext
         }
     }
 
-    private TimeSpan GetNextPollDelay(BuildSnapshot? snapshot)
+    private TimeSpan GetNextPollDelay(IReadOnlyList<BuildSnapshot> snapshots)
     {
         var configuredIdleDelay = TimeSpan.FromSeconds(_settings.PollIntervalSeconds);
-        if (snapshot?.IsRunning != true)
-        {
-            return configuredIdleDelay;
-        }
-
-        return GetRateSafeRunningDelay(snapshot);
+        var runningSnapshot = snapshots.FirstOrDefault(s => s.IsRunning);
+        return runningSnapshot is null ? configuredIdleDelay : GetRateSafeRunningDelay(runningSnapshot);
     }
 
     private TimeSpan GetRateSafeRunningDelay(BuildSnapshot snapshot)
@@ -167,55 +160,57 @@ internal sealed class BuildCatApplicationContext : ApplicationContext
 
     private void MaybeNotify(BuildSnapshot snapshot)
     {
-        if (snapshot.RunId is null)
+        if (snapshot.RunId is null) return;
+
+        var repo = snapshot.Repository;
+        if (!_notificationTrackers.TryGetValue(repo, out var tracker))
         {
-            _lastSnapshot = snapshot;
-            return;
+            tracker = new RepoNotificationTracker();
+            _notificationTrackers[repo] = tracker;
         }
 
         var runId = snapshot.RunId.Value;
-        if (!_hasObservedRun)
+
+        if (!tracker.HasObservedRun)
         {
-            _hasObservedRun = true;
-            _lastKnownRunId = runId;
+            tracker.HasObservedRun = true;
+            tracker.LastKnownRunId = runId;
             if (snapshot.IsRunning)
             {
-                _runningRunsObserved.Add(runId);
+                tracker.RunningRunsObserved.Add(runId);
             }
             return;
         }
 
         if (_settings.NotifyBuildStarted
             && snapshot.IsRunning
-            && _lastKnownRunId != runId
-            && _startedRunsNotified.Add(runId))
+            && tracker.LastKnownRunId != runId
+            && tracker.StartedRunsNotified.Add(runId))
         {
             _notifications.BuildStarted(snapshot.Repository);
         }
 
         if (snapshot.IsRunning)
         {
-            _runningRunsObserved.Add(runId);
+            tracker.RunningRunsObserved.Add(runId);
         }
 
         if (_settings.NotifyBuildCompleted
-            && _runningRunsObserved.Contains(runId)
-            && snapshot.IsCompleted)
+            && tracker.RunningRunsObserved.Contains(runId)
+            && snapshot.IsCompleted
+            && tracker.CompletedRunsNotified.Add(runId))
         {
-            if (_completedRunsNotified.Add(runId))
+            if (snapshot.State == BuildState.Success)
             {
-                if (snapshot.State == BuildState.Success)
-                {
-                    _notifications.BuildSucceeded(snapshot.Repository);
-                }
-                else
-                {
-                    _notifications.BuildFailed();
-                }
+                _notifications.BuildSucceeded(snapshot.Repository);
+            }
+            else
+            {
+                _notifications.BuildFailed(snapshot.Repository);
             }
         }
 
-        _lastKnownRunId = runId;
+        tracker.LastKnownRunId = runId;
     }
 
     private void ShowSettings()
@@ -231,7 +226,7 @@ internal sealed class BuildCatApplicationContext : ApplicationContext
         _settings.StartWithWindows = _startupService.IsEnabled();
         _settingsService.Save(_settings);
         _tray.UpdateSettings(_settings, _settings.StartWithWindows);
-        _tray.UpdateNextPoll(GetNextPollDelay(_lastSnapshot), _lastSnapshot);
+        _tray.UpdateNextPoll(GetNextPollDelay(_lastSnapshots), _lastSnapshots);
         _ = CheckNowAsync();
         WakePollLoop();
     }
@@ -262,5 +257,14 @@ internal sealed class BuildCatApplicationContext : ApplicationContext
         _pollWake.Dispose();
         _shutdown.Dispose();
         base.ExitThreadCore();
+    }
+
+    private sealed class RepoNotificationTracker
+    {
+        public long? LastKnownRunId;
+        public bool HasObservedRun;
+        public readonly HashSet<long> RunningRunsObserved = [];
+        public readonly HashSet<long> StartedRunsNotified = [];
+        public readonly HashSet<long> CompletedRunsNotified = [];
     }
 }

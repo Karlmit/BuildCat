@@ -19,15 +19,15 @@ internal sealed class GitHubActionsClient : IDisposable
         _httpClient.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
     }
 
-    public async Task<GitHubActionsResult> GetLatestRunAsync(AppSettings settings, CancellationToken cancellationToken)
+    public async Task<GitHubActionsResult> GetLatestRunAsync(
+        string owner, string repo, string? token, CancellationToken cancellationToken)
     {
-        settings.Normalize();
-        var requestUri = $"https://api.github.com/repos/{Uri.EscapeDataString(settings.Owner)}/{Uri.EscapeDataString(settings.Repo)}/actions/runs?per_page=1";
+        var requestUri = $"https://api.github.com/repos/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(repo)}/actions/runs?per_page=1";
 
         using var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
-        if (!string.IsNullOrWhiteSpace(settings.GitHubToken))
+        if (!string.IsNullOrWhiteSpace(token))
         {
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", settings.GitHubToken);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         }
 
         try

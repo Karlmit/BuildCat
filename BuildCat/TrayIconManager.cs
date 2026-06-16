@@ -4,21 +4,19 @@ namespace BuildCat;
 
 internal sealed class TrayIconManager : IDisposable
 {
-    private readonly ToolStripMenuItem _statusItem = new("Current status: Unknown") { Enabled = false };
     private readonly ToolStripMenuItem _checkedItem = new("Last checked: Never") { Enabled = false };
-    private readonly ToolStripMenuItem _repositoryItem = new("Repository: Not configured") { Enabled = false };
     private readonly ToolStripMenuItem _authItem = new("GitHub auth: Unknown") { Enabled = false };
     private readonly ToolStripMenuItem _pollingItem = new("Polling: Green 30s, Yellow 10s") { Enabled = false };
     private readonly ToolStripMenuItem _nextPollItem = new("Next auto-check: Unknown") { Enabled = false };
-    private readonly ToolStripMenuItem _workflowItem = new("Latest workflow: Unknown") { Enabled = false };
-    private readonly ToolStripMenuItem _openRunItem = new("Open latest run in browser");
+    private readonly ToolStripSeparator _repoSeparator = new();
+    private readonly ToolStripSeparator _actionSeparator = new();
     private readonly ToolStripMenuItem _checkNowItem = new("Check now");
     private readonly ToolStripMenuItem _settingsItem = new("Settings");
     private readonly ToolStripMenuItem _startWithWindowsItem = new("Start with Windows") { CheckOnClick = true };
     private readonly ToolStripMenuItem _exitItem = new("Exit");
     private readonly ContextMenuStrip _menu = new();
+    private readonly List<ToolStripMenuItem> _repoItems = [];
     private readonly Dictionary<BuildState, Icon> _icons = new();
-    private BuildSnapshot? _snapshot;
 
     public NotifyIcon NotifyIcon { get; }
 
@@ -35,15 +33,13 @@ internal sealed class TrayIconManager : IDisposable
         _icons[BuildState.Failed] = CatIconFactory.Create(BuildState.Failed);
 
         _menu.Items.AddRange([
-            _statusItem,
             _checkedItem,
-            _repositoryItem,
             _authItem,
             _pollingItem,
             _nextPollItem,
-            _workflowItem,
-            new ToolStripSeparator(),
-            _openRunItem,
+            _repoSeparator,
+            // per-repo items inserted dynamically here
+            _actionSeparator,
             _checkNowItem,
             _settingsItem,
             _startWithWindowsItem,
@@ -51,8 +47,6 @@ internal sealed class TrayIconManager : IDisposable
             _exitItem
         ]);
 
-        _openRunItem.Enabled = false;
-        _openRunItem.Click += (_, _) => OpenLatestRun();
         _checkNowItem.Click += (_, _) => CheckNowRequested?.Invoke(this, EventArgs.Empty);
         _settingsItem.Click += (_, _) => SettingsRequested?.Invoke(this, EventArgs.Empty);
         _startWithWindowsItem.CheckedChanged += StartWithWindowsItemOnCheckedChanged;
@@ -70,57 +64,101 @@ internal sealed class TrayIconManager : IDisposable
 
     public void UpdateSettings(AppSettings settings, bool startWithWindows)
     {
-        _repositoryItem.Text = $"Repository: {settings.RepositorySlug}";
         _pollingItem.Text = $"Polling: Green {FormatDuration(TimeSpan.FromSeconds(settings.PollIntervalSeconds))}, Yellow {FormatDuration(TimeSpan.FromSeconds(settings.RunningPollIntervalSeconds))}";
         SetStartWithWindowsChecked(startWithWindows);
-        if (_snapshot is null)
-        {
-            var tooltip = string.IsNullOrWhiteSpace(settings.Repo)
-                ? "BuildCat: Not configured"
-                : $"BuildCat - {settings.Repo}: Unknown";
-            NotifyIcon.Text = TrimTooltip(tooltip);
-        }
     }
 
     public void SetStartWithWindowsChecked(bool checkedValue)
     {
-        if (_startWithWindowsItem.Checked == checkedValue)
-        {
-            return;
-        }
+        if (_startWithWindowsItem.Checked == checkedValue) return;
 
         _startWithWindowsItem.CheckedChanged -= StartWithWindowsItemOnCheckedChanged;
         _startWithWindowsItem.Checked = checkedValue;
         _startWithWindowsItem.CheckedChanged += StartWithWindowsItemOnCheckedChanged;
     }
 
-    public void UpdateSnapshot(BuildSnapshot snapshot)
+    public void UpdateSnapshots(IReadOnlyList<BuildSnapshot> snapshots)
     {
-        _snapshot = snapshot;
-        NotifyIcon.Icon = _icons[snapshot.State];
-        NotifyIcon.Text = TrimTooltip(snapshot.Tooltip);
+        var aggregateState = BuildSnapshot.AggregateState(snapshots);
+        NotifyIcon.Icon = _icons[aggregateState];
+        NotifyIcon.Text = TrimTooltip(BuildTooltip(snapshots));
 
-        _statusItem.Text = TrimMenuText(snapshot.ErrorMessage is null
-            ? $"Current status: {snapshot.StatusText}"
-            : $"Current status: {snapshot.StatusText} - {snapshot.ErrorMessage}");
-        _checkedItem.Text = $"Last checked: {snapshot.CheckedAt.LocalDateTime:yyyy-MM-dd HH:mm:ss}";
-        _repositoryItem.Text = $"Repository: {snapshot.Repository}";
-        _authItem.Text = BuildAuthText(snapshot);
-        _workflowItem.Text = snapshot.MenuWorkflowText;
-        _openRunItem.Enabled = !string.IsNullOrWhiteSpace(snapshot.HtmlUrl);
+        if (snapshots.Count > 0)
+        {
+            _checkedItem.Text = $"Last checked: {snapshots[0].CheckedAt.LocalDateTime:yyyy-MM-dd HH:mm:ss}";
+            _authItem.Text = BuildAuthText(snapshots[0]);
+        }
+
+        RebuildRepoMenuItems(snapshots);
     }
 
-    public void UpdateNextPoll(TimeSpan delay, BuildSnapshot? snapshot)
+    public void UpdateNextPoll(TimeSpan delay, IReadOnlyList<BuildSnapshot>? snapshots)
     {
-        var state = snapshot?.State switch
+        var state = BuildSnapshot.AggregateState(snapshots ?? []) switch
         {
             BuildState.Running => "yellow",
             BuildState.Success => "green",
             BuildState.Failed => "red",
             _ => "gray"
         };
-
         _nextPollItem.Text = $"Next auto-check: ~{FormatDuration(delay)} ({state})";
+    }
+
+    private void RebuildRepoMenuItems(IReadOnlyList<BuildSnapshot> snapshots)
+    {
+        foreach (var item in _repoItems)
+        {
+            _menu.Items.Remove(item);
+            item.Dispose();
+        }
+        _repoItems.Clear();
+
+        var insertIndex = _menu.Items.IndexOf(_repoSeparator) + 1;
+        foreach (var snapshot in snapshots)
+        {
+            var label = FormatRepoMenuItem(snapshot);
+            var item = new ToolStripMenuItem(label);
+            var url = snapshot.HtmlUrl;
+            item.Enabled = !string.IsNullOrWhiteSpace(url);
+            if (!string.IsNullOrWhiteSpace(url))
+            {
+                item.Click += (_, _) => OpenUrl(url);
+            }
+
+            _menu.Items.Insert(insertIndex, item);
+            _repoItems.Add(item);
+            insertIndex++;
+        }
+    }
+
+    private static string FormatRepoMenuItem(BuildSnapshot snapshot)
+    {
+        var status = snapshot.State switch
+        {
+            BuildState.Success => "Success",
+            BuildState.Running => "Building...",
+            BuildState.Failed  => snapshot.ErrorMessage is null
+                ? snapshot.StatusText
+                : $"{snapshot.StatusText}",
+            _ => snapshot.ErrorMessage is null ? "Unknown" : "Error"
+        };
+        return TrimMenuText($"{snapshot.Repository}  ·  {status}");
+    }
+
+    private static string BuildTooltip(IReadOnlyList<BuildSnapshot> snapshots)
+    {
+        if (snapshots.Count == 0)
+            return "BuildCat: Not configured";
+        if (snapshots.Count == 1)
+            return snapshots[0].Tooltip;
+
+        var groups = snapshots.GroupBy(s => s.State).ToDictionary(g => g.Key, g => g.Count());
+        var parts = new List<string>();
+        if (groups.TryGetValue(BuildState.Failed, out var f)) parts.Add($"{f} failed");
+        if (groups.TryGetValue(BuildState.Running, out var r)) parts.Add($"{r} building");
+        if (groups.TryGetValue(BuildState.Success, out var s)) parts.Add($"{s} green");
+        if (groups.TryGetValue(BuildState.Unknown, out var u)) parts.Add($"{u} unknown");
+        return TrimTooltip($"BuildCat: {string.Join(", ", parts)}");
     }
 
     private void StartWithWindowsItemOnCheckedChanged(object? sender, EventArgs e)
@@ -136,16 +174,11 @@ internal sealed class TrayIconManager : IDisposable
         }
     }
 
-    private void OpenLatestRun()
+    private static void OpenUrl(string url)
     {
-        if (string.IsNullOrWhiteSpace(_snapshot?.HtmlUrl))
-        {
-            return;
-        }
-
         try
         {
-            Process.Start(new ProcessStartInfo(_snapshot.HtmlUrl)
+            System.Diagnostics.Process.Start(new ProcessStartInfo(url)
             {
                 UseShellExecute = true
             });
@@ -154,16 +187,6 @@ internal sealed class TrayIconManager : IDisposable
         {
             // Browser launch failures should not take down the tray app.
         }
-    }
-
-    private static string TrimTooltip(string text)
-    {
-        return text.Length <= 63 ? text : text[..60] + "...";
-    }
-
-    private static string TrimMenuText(string text)
-    {
-        return text.Length <= 180 ? text : text[..177] + "...";
     }
 
     private static string BuildAuthText(BuildSnapshot snapshot)
@@ -183,19 +206,21 @@ internal sealed class TrayIconManager : IDisposable
         return $"GitHub auth: {auth} ({snapshot.RateLimitRemaining}/{snapshot.RateLimitLimit} left{resetText})";
     }
 
+    private static string TrimTooltip(string text) =>
+        text.Length <= 63 ? text : text[..60] + "...";
+
+    private static string TrimMenuText(string text) =>
+        text.Length <= 180 ? text : text[..177] + "...";
+
     private static string FormatDuration(TimeSpan duration)
     {
         if (duration.TotalSeconds < 60)
-        {
             return $"{Math.Ceiling(duration.TotalSeconds):0}s";
-        }
 
         if (duration.TotalMinutes < 60)
-        {
             return duration.TotalSeconds % 60 == 0
                 ? $"{duration.TotalMinutes:0}m"
                 : $"{duration.TotalMinutes:0.#}m";
-        }
 
         return $"{duration.TotalHours:0.#}h";
     }

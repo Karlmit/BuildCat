@@ -19,9 +19,9 @@ internal sealed class NotificationService
         Show("Build completed successfully", $"{repository} is ready to update and test.", ToolTipIcon.Info);
     }
 
-    public void BuildFailed()
+    public void BuildFailed(string repository)
     {
-        Show("Build failed", "Open GitHub Actions to inspect the failed run.", ToolTipIcon.Error);
+        Show("Build failed", $"{repository} failed. Open GitHub Actions to inspect the run.", ToolTipIcon.Error);
     }
 
     private void Show(string title, string body, ToolTipIcon icon)
