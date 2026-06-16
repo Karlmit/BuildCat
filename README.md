@@ -13,10 +13,18 @@ BuildCat is a tiny Windows tray app that watches the latest GitHub Actions run f
 
 BuildCat does not ship with a default monitored repository. On first run, open `Settings` and enter the GitHub owner and repo you want to watch.
 
+## Install
+
+Download the latest release from the [Releases page](https://github.com/Karlmit/BuildCat/releases).
+
+**Installer (recommended):** Run `BuildCat-vX.Y.Z-Setup.exe`. It installs BuildCat to `%LocalAppData%\BuildCat\`, offers a **Start with Windows** checkbox during setup, creates a Start Menu shortcut, and registers an uninstaller.
+
+**Portable:** Run `BuildCat.exe` directly from wherever you place it. Use the tray menu to toggle Start with Windows after placing it in its permanent location.
+
 ## Requirements
 
 - Windows 10 or Windows 11
-- .NET 8 SDK for development
+- .NET 8 SDK for development (not needed for the installer or portable exe)
 
 The app is a WinForms tray application. It starts directly in the Windows notification area and does not open a main window.
 
@@ -115,7 +123,7 @@ Run `BuildCat.exe` from that folder. If you enable Start with Windows, enable it
 - Gray icon: check the owner/repo settings, internet connection, GitHub API status, and whether the repository has workflow runs.
 - Gray icon with public repo: you may have hit GitHub's unauthenticated API rate limit. Add a token and wait for the limit to reset.
 - No notification: Windows notification settings may suppress tray balloon notifications. The tray icon still updates.
-- Start with Windows does not launch: move the executable to its final location, run it, then toggle Start with Windows off and on again.
+- Start with Windows does not launch: if using the portable exe, make sure it is in its permanent location before toggling Start with Windows, then toggle it off and on again to re-register the path.
 - Private repo fails: create a fine-grained token with access to that repository and paste it into Settings.
 
 ## Architecture

@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publish
+        run: >
+          dotnet publish BuildCat/BuildCat.csproj
+          -c Release -r win-x64 --self-contained true
+          /p:PublishSingleFile=true
+          /p:IncludeNativeLibrariesForSelfExtract=true
+
+      - name: Build installer
+        uses: Minionguyjpro/Inno-Setup-Action@v1.2.4
+        env:
+          APP_VERSION: ${{ github.ref_name }}
+        with:
+          path: setup.iss
+          options: /O"Output"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            Output/BuildCat-${{ github.ref_name }}-Setup.exe
+            BuildCat/bin/Release/net8.0-windows/win-x64/publish/BuildCat.exe
+          generate_release_notes: false
+          body: |
+            ## BuildCat ${{ github.ref_name }}
+
+            ### Install (recommended)
+            Download **BuildCat-${{ github.ref_name }}-Setup.exe** and run it.
+            The installer copies BuildCat to `%LocalAppData%\BuildCat\` and offers a
+            **"Start with Windows"** option during setup.
+
+            ### Portable
+            Download **BuildCat.exe** and run it from anywhere. Use the tray menu
+            to toggle "Start with Windows" after placing it in its permanent location.
+
+            ### Status colors
+            - 🟡 Yellow — queued or in progress
+            - 🟢 Green — completed successfully
+            - 🔴 Red — failed, cancelled, timed out, or action required
+            - ⚫ Gray — unknown, not configured, or rate limited
