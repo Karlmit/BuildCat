@@ -1,4 +1,5 @@
-using System.Drawing.Drawing2D;
+using Svg;
+using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 
 namespace BuildCat;
@@ -10,6 +11,8 @@ internal static class CatIconFactory
     private static readonly Color Red = Color.FromArgb(220, 65, 60);
     private static readonly Color Gray = Color.FromArgb(142, 148, 158);
 
+    private static readonly string SvgTemplate = LoadSvgTemplate();
+
     public static Icon Create(BuildState state)
     {
         var color = state switch
@@ -20,47 +23,29 @@ internal static class CatIconFactory
             _ => Gray
         };
 
-        using var bitmap = new Bitmap(32, 32, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
-        using (var g = Graphics.FromImage(bitmap))
+        var hex = $"#{color.R:x2}{color.G:x2}{color.B:x2}";
+        var svgContent = SvgTemplate.Replace("fill:#020202", $"fill:{hex}");
+        var svgDoc = SvgDocument.FromSvg<SvgDocument>(svgContent);
+
+        using var result = new Bitmap(32, 32, PixelFormat.Format32bppArgb);
+        using (var g = Graphics.FromImage(result))
         {
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
             g.Clear(Color.Transparent);
 
-            using var path = new GraphicsPath();
-            path.StartFigure();
-            path.AddBezier(new PointF(4.6f, 23.6f), new PointF(1.8f, 17.0f), new PointF(4.5f, 9.7f), new PointF(9.0f, 8.2f));
-            path.AddLine(new PointF(9.0f, 8.2f), new PointF(7.8f, 2.8f));
-            path.AddLine(new PointF(7.8f, 2.8f), new PointF(15.1f, 7.5f));
-            path.AddLine(new PointF(15.1f, 7.5f), new PointF(16.9f, 7.5f));
-            path.AddLine(new PointF(16.9f, 7.5f), new PointF(24.2f, 2.8f));
-            path.AddLine(new PointF(24.2f, 2.8f), new PointF(23.0f, 8.2f));
-            path.AddBezier(new PointF(23.0f, 8.2f), new PointF(27.5f, 9.7f), new PointF(30.2f, 17.0f), new PointF(27.4f, 23.6f));
-            path.AddBezier(new PointF(27.4f, 23.6f), new PointF(24.1f, 29.0f), new PointF(7.9f, 29.0f), new PointF(4.6f, 23.6f));
-            path.CloseFigure();
+            // Layered glow: render progressively larger, centered, with increasing opacity
+            using var outerGlow = svgDoc.Draw(42, 42);
+            DrawWithOpacity(g, outerGlow, -5, -5, 0.25f);
 
-            DrawGlow(g, path, color);
+            using var innerGlow = svgDoc.Draw(36, 36);
+            DrawWithOpacity(g, innerGlow, -2, -2, 0.45f);
 
-            using var fill = new SolidBrush(color);
-            g.FillPath(fill, path);
-
-            using var highlight = new Pen(Color.FromArgb(120, Color.White), 1.2f)
-            {
-                LineJoin = LineJoin.Round,
-                StartCap = LineCap.Round,
-                EndCap = LineCap.Round
-            };
-            using var edge = new Pen(Color.FromArgb(150, Color.White), 1.6f)
-            {
-                LineJoin = LineJoin.Round,
-                StartCap = LineCap.Round,
-                EndCap = LineCap.Round
-            };
-            g.DrawPath(edge, path);
-            g.DrawArc(highlight, 7.0f, 10.0f, 18.0f, 14.0f, 205, 130);
+            using var main = svgDoc.Draw(32, 32);
+            g.DrawImage(main, 0, 0, 32, 32);
         }
 
-        var handle = bitmap.GetHicon();
+        var handle = result.GetHicon();
         try
         {
             using var icon = Icon.FromHandle(handle);
@@ -72,25 +57,24 @@ internal static class CatIconFactory
         }
     }
 
+    private static void DrawWithOpacity(Graphics g, Bitmap bmp, int x, int y, float opacity)
+    {
+        var colorMatrix = new ColorMatrix { Matrix33 = opacity };
+        using var attrs = new ImageAttributes();
+        attrs.SetColorMatrix(colorMatrix);
+        g.DrawImage(bmp, new Rectangle(x, y, bmp.Width, bmp.Height),
+            0, 0, bmp.Width, bmp.Height, GraphicsUnit.Pixel, attrs);
+    }
+
+    private static string LoadSvgTemplate()
+    {
+        var assembly = typeof(CatIconFactory).Assembly;
+        using var stream = assembly.GetManifestResourceStream("BuildCat.Assets.BuildCat.svg")
+            ?? throw new InvalidOperationException("BuildCat.Assets.BuildCat.svg embedded resource not found");
+        using var reader = new StreamReader(stream);
+        return reader.ReadToEnd();
+    }
+
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool DestroyIcon(IntPtr hIcon);
-
-    private static void DrawGlow(Graphics graphics, GraphicsPath path, Color color)
-    {
-        using var outerGlow = new Pen(Color.FromArgb(45, color), 8.5f)
-        {
-            LineJoin = LineJoin.Round,
-            StartCap = LineCap.Round,
-            EndCap = LineCap.Round
-        };
-        using var innerGlow = new Pen(Color.FromArgb(75, color), 5.5f)
-        {
-            LineJoin = LineJoin.Round,
-            StartCap = LineCap.Round,
-            EndCap = LineCap.Round
-        };
-
-        graphics.DrawPath(outerGlow, path);
-        graphics.DrawPath(innerGlow, path);
-    }
 }

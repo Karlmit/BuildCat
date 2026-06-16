@@ -10,5 +10,12 @@
     <RootNamespace>BuildCat</RootNamespace>
     <ApplicationIcon>Assets\BuildCat.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
   </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Svg" Version="3.4.7" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\BuildCat.svg" />
+  </ItemGroup>
 </Project>
